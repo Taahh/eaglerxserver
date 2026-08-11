@@ -16,6 +16,8 @@
 
 package net.lax1dude.eaglercraft.backend.server.bukkit;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
@@ -23,9 +25,12 @@ import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.net.SocketAddress;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Properties;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -559,6 +564,10 @@ public class BukkitUnsafe {
 	}
 
 	public static boolean isEnableNativeTransport(Server server) {
+		Boolean propertiesFileValue = readNativeTransportFromPropertiesFile();
+		if (propertiesFileValue != null) {
+			return propertiesFileValue.booleanValue();
+		}
 		try {
 			Object dedicatedPlayerList = server.getClass().getMethod("getHandle").invoke(server);
 			Object dedicatedServer = dedicatedPlayerList.getClass().getMethod("getServer").invoke(dedicatedPlayerList);
@@ -575,9 +584,21 @@ public class BukkitUnsafe {
 				getBoolean.setAccessible(true);
 				return (Boolean) getBoolean.invoke(propertyManager, "use-native-transport", true);
 			} catch (Exception e1) {
-				throw Util.propagateReflectThrowable(e1);
+				// A fork may remove both internal property accessors. NIO is the safe fallback.
+				return false;
 			}
 		}
+	}
+
+	private static Boolean readNativeTransportFromPropertiesFile() {
+		Properties properties = new Properties();
+		try (InputStream input = Files.newInputStream(Path.of("server.properties"))) {
+			properties.load(input);
+		} catch (IOException ex) {
+			return null;
+		}
+		String value = properties.getProperty("use-native-transport");
+		return value != null ? Boolean.valueOf(value.trim()) : Boolean.TRUE;
 	}
 
 	public static EventLoopGroup getEventLoopGroup(Server server, boolean enableNativeTransport) {

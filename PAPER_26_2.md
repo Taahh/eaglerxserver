@@ -25,9 +25,10 @@ The combined plugin intentionally does not declare `api-version: 26.2`, because 
 
 The plugin is compiled as Java 17 bytecode and can run on Paper's Java 25 runtime. The Paper 26.2 compatibility fixes are reflection-based so the project does not need to replace its Paper 1.12.2 compile-only dependency or force every BungeeCord/Velocity artifact to require Java 25.
 
-The compatibility smoke test used Paper 26.2 build 87 and Java 25. It verified:
+The compatibility smoke tests used Paper 26.2 builds 87 and 111 with Java 25 on Windows and Linux. They verified:
 
 - plugin load, enable, listener registration, and clean disable;
+- native Netty Epoll initialization on Linux without relying on fork-specific server-property accessors;
 - an HTTP WebSocket upgrade on the Minecraft port (`101 Switching Protocols`);
 - a Minecraft protocol 776 status response;
 - a protocol 776 offline login through the compression and login-finished packets.
@@ -54,6 +55,7 @@ A real Eaglercraft browser client and the optional companion plugins should stil
 ## Paper 26.2 changes handled here
 
 - `MinecraftServer#getServerConnection()` became `getConnection()`, and Netty groups moved to `EventLoopGroupHolder`.
+- native-transport configuration lookup no longer aborts startup when a Paper fork removes its internal dedicated-server property accessors.
 - the connection direction type is now Mojang-mapped `PacketFlow`.
 - `Connection#send` overloads and login/compression packet names changed.
 - login listeners use Mojang-mapped names, a transferred-login constructor argument, and a different state enum name.
