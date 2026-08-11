@@ -26,12 +26,14 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 import org.bukkit.Server;
 import org.bukkit.command.CommandMap;
 import org.bukkit.entity.Player;
 
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ForwardingList;
 import com.google.common.collect.Multimap;
 import com.mojang.authlib.GameProfile;
@@ -75,6 +77,11 @@ public class BukkitUnsafe {
 	private static volatile Class<?> class_NetworkManager = null;
 	private static Field field_NetworkManager_channel = null;
 	private static Field field_NetworkManager_address = null;
+	private static Method method_GameProfile_properties = null;
+	private static Method method_GameProfile_id = null;
+	private static Method method_GameProfile_name = null;
+	private static Method method_Property_value = null;
+	private static boolean modernGameProfileAccessors = false;
 
 	private static synchronized void bindCraftPlayer(Player playerObject) {
 		if (CLASS_CRAFTPLAYER_HANDLE.getAcquire() != null) {
@@ -87,7 +94,8 @@ public class BukkitUnsafe {
 			Object entityPlayer = method_CraftPlayer_getHandle.invoke(playerObject);
 			Class<?> clz2 = entityPlayer.getClass();
 			for (Field f : clz2.getFields()) {
-				if (f.getType().getSimpleName().equals("PlayerConnection")) {
+				String typeName = f.getType().getSimpleName();
+				if (typeName.equals("PlayerConnection") || typeName.equals("ServerGamePacketListenerImpl")) {
 					field_EntityPlayer_playerConnection = f;
 					break;
 				}
@@ -97,7 +105,8 @@ public class BukkitUnsafe {
 			}
 			Class<?> clz3 = field_EntityPlayer_playerConnection.getType();
 			for (Field f : clz3.getFields()) {
-				if (f.getType().getSimpleName().equals("NetworkManager")) {
+				String typeName = f.getType().getSimpleName();
+				if (typeName.equals("NetworkManager") || typeName.equals("Connection")) {
 					field_PlayerConnection_networkManager = f;
 					break;
 				}
@@ -129,7 +138,15 @@ public class BukkitUnsafe {
 				System.err.println("Could not find SocketAddress field in class " + clz4.getName());
 				System.err.println("Use Spigot if you want EaglerXServer to forward player IPs");
 			}
-			method_EntityPlayer_getProfile = clz2.getMethod("getProfile");
+			for (Method m : clz2.getMethods()) {
+				if (m.getParameterCount() == 0 && m.getReturnType() == GameProfile.class) {
+					method_EntityPlayer_getProfile = m;
+					break;
+				}
+			}
+			if (method_EntityPlayer_getProfile == null) {
+				throw new IllegalStateException("Could not locate game profile method of " + clz2.getName());
+			}
 			CLASS_NETWORKMANAGER_HANDLE.setRelease(clz4);
 			class_PlayerConnection = clz3;
 			class_EntityPlayer = clz2;
@@ -156,11 +173,11 @@ public class BukkitUnsafe {
 			bindCraftPlayer(player);
 		}
 		try {
-			Multimap<String, Property> props = ((GameProfile) method_EntityPlayer_getProfile
-					.invoke(method_CraftPlayer_getHandle.invoke(player))).getProperties();
+			Multimap<String, Property> props = getGameProfileProperties((GameProfile) method_EntityPlayer_getProfile
+					.invoke(method_CraftPlayer_getHandle.invoke(player)));
 			Collection<Property> tex = props.get("textures");
 			if (!tex.isEmpty()) {
-				return tex.iterator().next().getValue();
+				return getPropertyValue(tex.iterator().next());
 			}
 		} catch (ReflectiveOperationException e) {
 			throw Util.propagateReflectThrowable(e);
@@ -199,9 +216,9 @@ public class BukkitUnsafe {
 			bindCraftPlayer(player);
 		}
 		try {
-			return new PropertyInjector(
-					((GameProfile) method_EntityPlayer_getProfile.invoke(method_CraftPlayer_getHandle.invoke(player)))
-							.getProperties());
+			Object entityPlayer = method_CraftPlayer_getHandle.invoke(player);
+			GameProfile profile = (GameProfile) method_EntityPlayer_getProfile.invoke(entityPlayer);
+			return new PropertyInjector(getGameProfileProperties(ensureMutableGameProfile(entityPlayer, profile)));
 		} catch (ReflectiveOperationException e) {
 			throw Util.propagateReflectThrowable(e);
 		}
@@ -568,11 +585,111 @@ public class BukkitUnsafe {
 		try {
 			Object dedicatedPlayerList = server.getClass().getMethod("getHandle").invoke(server);
 			Object minecraftServer = dedicatedPlayerList.getClass().getMethod("getServer").invoke(dedicatedPlayerList);
-			serverConnection = minecraftServer.getClass().getMethod("getServerConnection").getReturnType();
+			try {
+				serverConnection = minecraftServer.getClass().getMethod("getServerConnection").getReturnType();
+			} catch (NoSuchMethodException ex) {
+				return getEventLoopGroupPaperModern(enableNativeTransport);
+			}
 		} catch (ReflectiveOperationException e) {
 			throw Util.propagateReflectThrowable(e);
 		}
 		return getEventLoopGroup(serverConnection, enableNativeTransport);
+	}
+
+	public static Multimap<String, Property> getGameProfileProperties(GameProfile profile) {
+		bindGameProfileAccessors();
+		try {
+			return (Multimap<String, Property>) method_GameProfile_properties.invoke(profile);
+		} catch (ReflectiveOperationException e) {
+			throw Util.propagateReflectThrowable(e);
+		}
+	}
+
+	public static UUID getGameProfileId(GameProfile profile) {
+		bindGameProfileAccessors();
+		try {
+			return (UUID) method_GameProfile_id.invoke(profile);
+		} catch (ReflectiveOperationException e) {
+			throw Util.propagateReflectThrowable(e);
+		}
+	}
+
+	private static String getGameProfileName(GameProfile profile) {
+		bindGameProfileAccessors();
+		try {
+			return (String) method_GameProfile_name.invoke(profile);
+		} catch (ReflectiveOperationException e) {
+			throw Util.propagateReflectThrowable(e);
+		}
+	}
+
+	private static GameProfile ensureMutableGameProfile(Object entityPlayer, GameProfile profile) {
+		bindGameProfileAccessors();
+		if (!modernGameProfileAccessors) {
+			return profile;
+		}
+		try {
+			Multimap<String, Property> mutableProperties = ArrayListMultimap.create(getGameProfileProperties(profile));
+			Class<?> propertyMapClass = Class.forName("com.mojang.authlib.properties.PropertyMap");
+			Object propertyMap = propertyMapClass.getConstructor(Multimap.class).newInstance(mutableProperties);
+			GameProfile replacement = (GameProfile) GameProfile.class
+					.getConstructor(UUID.class, String.class, propertyMapClass)
+					.newInstance(getGameProfileId(profile), getGameProfileName(profile), propertyMap);
+			Class<?> type = entityPlayer.getClass();
+			do {
+				for (Field field : type.getDeclaredFields()) {
+					if (field.getType() == GameProfile.class) {
+						field.setAccessible(true);
+						field.set(entityPlayer, replacement);
+						return replacement;
+					}
+				}
+			} while ((type = type.getSuperclass()) != Object.class);
+			throw new NoSuchFieldException("Could not locate game profile field of " + entityPlayer.getClass().getName());
+		} catch (ReflectiveOperationException e) {
+			throw Util.propagateReflectThrowable(e);
+		}
+	}
+
+	private static String getPropertyValue(Property property) {
+		bindGameProfileAccessors();
+		try {
+			return (String) method_Property_value.invoke(property);
+		} catch (ReflectiveOperationException e) {
+			throw Util.propagateReflectThrowable(e);
+		}
+	}
+
+	private static synchronized void bindGameProfileAccessors() {
+		if (method_GameProfile_properties != null) {
+			return;
+		}
+		try {
+			try {
+				method_GameProfile_properties = GameProfile.class.getMethod("getProperties");
+				method_GameProfile_id = GameProfile.class.getMethod("getId");
+				method_GameProfile_name = GameProfile.class.getMethod("getName");
+			} catch (NoSuchMethodException ex) {
+				modernGameProfileAccessors = true;
+				method_GameProfile_properties = GameProfile.class.getMethod("properties");
+				method_GameProfile_id = GameProfile.class.getMethod("id");
+				method_GameProfile_name = GameProfile.class.getMethod("name");
+			}
+			try {
+				method_Property_value = Property.class.getMethod("getValue");
+			} catch (NoSuchMethodException ex) {
+				method_Property_value = Property.class.getMethod("value");
+			}
+		} catch (ReflectiveOperationException e) {
+			throw Util.propagateReflectThrowable(e);
+		}
+	}
+
+	private static EventLoopGroup getEventLoopGroupPaperModern(boolean enableNativeTransport)
+			throws ReflectiveOperationException {
+		Class<?> holderClass = Class.forName("net.minecraft.server.network.EventLoopGroupHolder");
+		Object holder = holderClass.getMethod("remote", boolean.class).invoke(null, enableNativeTransport);
+		return (EventLoopGroup) holderClass.getMethod("eventLoopGroup").invoke(holder);
 	}
 
 	public static EventLoopGroup getEventLoopGroup(Class<?> serverConnection, boolean enableNativeTransport) {

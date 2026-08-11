@@ -35,7 +35,7 @@ Please see the [Releases](https://github.com/lax1dude/eaglerxserver/releases) ta
 ## Installation
 
 > [!IMPORTANT]
-> EaglerXServer works best when installed on a reverse proxy (BungeeCord, Velocity), you can also install the plugin on your Bukkit/Spigot/Paper server, but we do not currently maintain Bukkit plugin support for versions above 1.17
+> EaglerXServer works best when installed on a reverse proxy (BungeeCord, Velocity). Direct Bukkit/Spigot/Paper networking support is version-sensitive. This fork includes a compatibility path for Paper 26.2; see [PAPER_26_2.md](PAPER_26_2.md) for build, installation, and validation details.
 
 **You must be using Java 17 or greater!**
 

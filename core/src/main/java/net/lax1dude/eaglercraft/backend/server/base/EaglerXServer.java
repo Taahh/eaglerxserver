@@ -203,11 +203,10 @@ public class EaglerXServer<PlayerObject> implements IEaglerXServerImpl<PlayerObj
 		if (platformType == EnumPlatformType.BUKKIT) {
 			logger().warn("Note: Its highly recommended to install EaglerXServer on BungeeCord or "
 					+ "Velocity instead, you will have a much better experience");
-			logger().warn("Note: If you are not using Spigot (or a derivative like Paper) or a version "
-					+ "above 1.12.2, things probably won't work right");
+			logger().warn("Note: Bukkit networking internals are version-sensitive; this build supports legacy "
+					+ "Spigot/Paper and includes a compatibility path for Paper 26.2");
 			if (platform.isModernPluginChannelNamesOnly()) {
-				logger().error("Detected a modern server version, things probably won't work right, "
-						+ "downgrade to 1.12.2 or below");
+				logger().info("Detected a modern Bukkit server, using modern plugin channel names");
 			}
 		}
 

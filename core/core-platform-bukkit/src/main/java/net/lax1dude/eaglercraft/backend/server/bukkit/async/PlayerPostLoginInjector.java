@@ -18,14 +18,12 @@ package net.lax1dude.eaglercraft.backend.server.bukkit.async;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.Iterator;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
 
 import org.bukkit.entity.Player;
@@ -33,13 +31,11 @@ import org.bukkit.event.player.PlayerLoginEvent;
 
 import com.google.common.collect.MapMaker;
 import com.mojang.authlib.GameProfile;
-import com.mojang.authlib.properties.Property;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerAdapter;
 import io.netty.util.AttributeKey;
-import io.netty.util.concurrent.GenericFutureListener;
 import net.lax1dude.eaglercraft.backend.server.api.bukkit.event.PlayerLoginPostEvent;
 import net.lax1dude.eaglercraft.backend.server.bukkit.BukkitUnsafe;
 import net.lax1dude.eaglercraft.backend.server.bukkit.PlatformPluginBukkit;
@@ -90,6 +86,7 @@ public class PlayerPostLoginInjector {
 	protected ClassProxy<Object> loginListenerProxy;
 	protected Field loginListenerServer;
 	protected Field loginListenerNetManager;
+	protected Field loginListenerTransferred;
 	protected Class<Object> enumProtocolState;
 	protected Object protocolStateOnResume;
 	protected Field loginListenerState;
@@ -104,11 +101,11 @@ public class PlayerPostLoginInjector {
 	protected Constructor<?> packetPlayDisconnectCtor;
 	protected Field packetLoginDisconnectMsg;
 
-	protected final ConcurrentMap<Property, Player> entityPlayers;
+	protected final ConcurrentMap<UUID, Player> entityPlayers;
 
 	public PlayerPostLoginInjector(PlatformPluginBukkit plugin) {
 		this.plugin = plugin;
-		this.entityPlayers = (new MapMaker()).concurrencyLevel(8).weakKeys().weakValues().makeMap();
+		this.entityPlayers = (new MapMaker()).concurrencyLevel(8).weakValues().makeMap();
 	}
 
 	private synchronized void bind(Object netManager) {
@@ -120,13 +117,20 @@ public class PlayerPostLoginInjector {
 			Class<Object> protocolDirType = null;
 			Field protocolDirField = null;
 			Field channelField = null;
-			for (Field f : netManagerClass.getDeclaredFields()) {
-				Class<?> clz = f.getType();
-				if (clz.getSimpleName().equals("EnumProtocolDirection")) {
-					f.setAccessible(true);
-					protocolDirType = (Class<Object>) f.getType();
-					protocolDirField = f;
+			for (Constructor<?> ctor : netManagerClass.getDeclaredConstructors()) {
+				Class<?>[] params = ctor.getParameterTypes();
+				if (params.length == 1 && params[0].isEnum()) {
+					protocolDirType = (Class<Object>) params[0];
 					break;
+				}
+			}
+			if (protocolDirType != null) {
+				for (Field f : netManagerClass.getDeclaredFields()) {
+					if (f.getType() == protocolDirType) {
+						f.setAccessible(true);
+						protocolDirField = f;
+						break;
+					}
 				}
 			}
 			for (Field f : netManagerClass.getFields()) {
@@ -148,7 +152,6 @@ public class PlayerPostLoginInjector {
 			Method sendPacketMethod2 = null;
 			Method sendPacketMethod3 = null;
 			Method getHandlerMethod = null;
-			Class<?> futureListenerArr = Array.newInstance(GenericFutureListener.class, 0).getClass();
 			for (Method m : netManagerClass.getMethods()) {
 				Class<?>[] params = m.getParameterTypes();
 				if (setHandlerMethod == null && params.length == 1
@@ -157,13 +160,12 @@ public class PlayerPostLoginInjector {
 				} else if (sendPacketMethod1 == null && params.length == 1
 						&& params[0].getSimpleName().equals("Packet")) {
 					sendPacketMethod1 = m;
-				} else if (sendPacketMethod3 == null && params.length == 3 && params[0].getSimpleName().equals("Packet")
-						&& params[1].equals(GenericFutureListener.class) && params[2].equals(futureListenerArr)) {
+				} else if (sendPacketMethod3 == null && params.length == 3
+						&& params[0].getSimpleName().equals("Packet")) {
 					sendPacketMethod3 = m;
 					sendPacketMethod2 = null;
 				} else if (sendPacketMethod3 == null && sendPacketMethod2 == null && params.length == 2
-						&& params[0].getSimpleName().equals("Packet")
-						&& params[1].equals(GenericFutureListener.class)) {
+						&& params[0].getSimpleName().equals("Packet")) {
 					sendPacketMethod2 = m;
 				} else if (getHandlerMethod == null && params.length == 0
 						&& m.getReturnType().getSimpleName().equals("PacketListener")) {
@@ -280,7 +282,9 @@ public class PlayerPostLoginInjector {
 			Object ret = netManagerProxy.createProxy(netManagerCtor, new Object[] { netManagerDir.get(netManager) },
 					(obj, meth, args) -> {
 						if (setHandlerMethod.equals(meth)) {
-							if (args[0].getClass().getSimpleName().equals("LoginListener")) {
+							String listenerName = args[0].getClass().getSimpleName();
+							if (listenerName.equals("LoginListener")
+									|| listenerName.equals("ServerLoginPacketListenerImpl")) {
 								meth.invoke(netManager, args);
 								fireEventLoginInit(channel);
 								args[0] = wrapLoginListener(getHandlerMethod.invoke(netManager), ctx);
@@ -302,13 +306,16 @@ public class PlayerPostLoginInjector {
 								}
 							}
 							meth.invoke(netManager, args);
-							if (ctx.throwOnLoginSuccess && nm.equals("PacketLoginOutSuccess")) {
+							if (ctx.throwOnLoginSuccess && (nm.equals("PacketLoginOutSuccess")
+									|| nm.equals("ClientboundLoginFinishedPacket"))) {
 								throw new EaglerError(getPacketProfile(args[0]));
 							}
 							return null;
 						} else if (ctx.compressionDisable && (sendPacketMethod3 != null ? sendPacketMethod3.equals(meth)
 								: sendPacketMethod2.equals(meth))) {
-							if (args[0].getClass().getSimpleName().equals("PacketLoginOutSetCompression")) {
+							String packetName = args[0].getClass().getSimpleName();
+							if (packetName.equals("PacketLoginOutSetCompression")
+									|| packetName.equals("ClientboundLoginCompressionPacket")) {
 								return null;
 							}
 						}
@@ -374,7 +381,7 @@ public class PlayerPostLoginInjector {
 			Constructor<Object> loginListenerCtor = null;
 			for (Constructor<? extends Object> ctor : loginListenerClass.getConstructors()) {
 				Class<?>[] params = ctor.getParameterTypes();
-				if (params.length == 2 && params[1] == clz2) {
+				if (params.length >= 2 && params[1] == clz2) {
 					loginListenerCtor = (Constructor<Object>) ctor;
 					mcServerClass = (Class<Object>) params[0];
 					break;
@@ -385,6 +392,7 @@ public class PlayerPostLoginInjector {
 			}
 			Field loginListenerServer = null;
 			Field loginListenerNetManager = null;
+			Field loginListenerTransferred = null;
 			Class<Object> enumProtocolState = null;
 			Field loginListenerState = null;
 			Field loginListenerPlayer = null;
@@ -395,16 +403,20 @@ public class PlayerPostLoginInjector {
 				} else if (f.getType() == clz2) {
 					f.setAccessible(true);
 					loginListenerNetManager = f;
-				} else if (f.getType().getName().equals(loginListenerClass.getName() + "$EnumProtocolState")) {
+				} else if (f.getType().isEnum() && f.getType().getEnclosingClass() == loginListenerClass) {
 					f.setAccessible(true);
 					loginListenerState = f;
 					enumProtocolState = (Class<Object>) f.getType();
-				} else if (f.getType().getSimpleName().equals("EntityPlayer")) {
+				} else if (f.getType().getSimpleName().equals("EntityPlayer")
+						|| f.getType().getSimpleName().equals("ServerPlayer")) {
 					f.setAccessible(true);
 					loginListenerPlayer = f;
+				} else if (f.getName().equals("transferred") && f.getType() == boolean.class) {
+					f.setAccessible(true);
+					loginListenerTransferred = f;
 				}
 				if (loginListenerServer != null && loginListenerNetManager != null && loginListenerState != null
-						&& loginListenerPlayer != null) {
+						&& (loginListenerCtor.getParameterCount() == 2 || loginListenerTransferred != null)) {
 					break;
 				}
 			}
@@ -418,8 +430,8 @@ public class PlayerPostLoginInjector {
 			if (loginListenerState == null) {
 				throw new IllegalStateException("Could not locate state field of " + loginListenerClass.getName());
 			}
-			if (loginListenerPlayer == null) {
-				throw new IllegalStateException("Could not locate player field of " + loginListenerClass.getName());
+			if (loginListenerCtor.getParameterCount() > 2 && loginListenerTransferred == null) {
+				throw new IllegalStateException("Could not locate transferred field of " + loginListenerClass.getName());
 			}
 			Method loginListenerTick = null;
 			Method loginListenerDisconnect = loginListenerClass.getMethod("disconnect", String.class);
@@ -453,6 +465,7 @@ public class PlayerPostLoginInjector {
 					loginListenerClass);
 			this.loginListenerServer = loginListenerServer;
 			this.loginListenerNetManager = loginListenerNetManager;
+			this.loginListenerTransferred = loginListenerTransferred;
 			this.enumProtocolState = enumProtocolState;
 			this.protocolStateOnResume = protocolStateOnResume;
 			this.loginListenerState = loginListenerState;
@@ -475,8 +488,13 @@ public class PlayerPostLoginInjector {
 			throw new IllegalStateException("Unknown LoginListener type: " + loginListener.getClass().getName());
 		}
 		try {
-			return loginListenerProxy.createProxy(loginListenerCtor,
-					new Object[] { loginListenerServer.get(loginListener), ctx.proxiedNetworkManager },
+			Object[] ctorArgs = new Object[loginListenerCtor.getParameterCount()];
+			ctorArgs[0] = loginListenerServer.get(loginListener);
+			ctorArgs[1] = ctx.proxiedNetworkManager;
+			if (ctorArgs.length > 2) {
+				ctorArgs[2] = loginListenerTransferred.get(loginListener);
+			}
+			return loginListenerProxy.createProxy(loginListenerCtor, ctorArgs,
 					(obj, meth, args) -> {
 						if (loginListenerTick.equals(meth)) {
 							try {
@@ -489,18 +507,7 @@ public class PlayerPostLoginInjector {
 							} catch (InvocationTargetException ex) {
 								Throwable er = ex.getCause();
 								if (er instanceof EaglerError err) {
-									Player player = null;
-									Iterator<Property> itr = err.gameProfile.getProperties().values().iterator();
-									while (itr.hasNext()) {
-										Property prop = itr.next();
-										if (prop.getName().startsWith("$eaglerMarker_")) {
-											Player e = entityPlayers.remove(prop);
-											if (e != null) {
-												player = e;
-											}
-											itr.remove();
-										}
-									}
+									Player player = entityPlayers.remove(BukkitUnsafe.getGameProfileId(err.gameProfile));
 									if (player != null) {
 										final Player playerFinal = player;
 										fireEventLoginPostAsync(playerFinal, ctx, (res) -> {
@@ -509,10 +516,12 @@ public class PlayerPostLoginInjector {
 													handlerAdded.set(ctx.originalNetworkManager, false);
 													ctx.channel.pipeline().replace("packet_handler", "packet_handler",
 															(ChannelHandler) ctx.originalNetworkManager);
-													Object entityPlayer = BukkitUnsafe.getHandle(playerFinal);
 													loginListenerNetManager.set(loginListener,
 															ctx.originalNetworkManager);
-													loginListenerPlayer.set(loginListener, entityPlayer);
+													if (loginListenerPlayer != null) {
+														Object entityPlayer = BukkitUnsafe.getHandle(playerFinal);
+														loginListenerPlayer.set(loginListener, entityPlayer);
+													}
 													loginListenerState.set(loginListener, protocolStateOnResume);
 												} else {
 													BaseComponent comp = res.getMessage();
@@ -593,11 +602,7 @@ public class PlayerPostLoginInjector {
 	}
 
 	public void handleLoginEvent(PlayerLoginEvent event) {
-		Property marker = new Property("$eaglerMarker_" + ThreadLocalRandom.current().nextLong(Long.MAX_VALUE), "TMP");
-		Object player = BukkitUnsafe.getHandle(event.getPlayer());
-		GameProfile profile = BukkitUnsafe.getGameProfile(player);
-		profile.getProperties().put(marker.getName(), marker);
-		entityPlayers.put(marker, event.getPlayer());
+		entityPlayers.put(event.getPlayer().getUniqueId(), event.getPlayer());
 	}
 
 	private void fireEventLoginInit(Channel channel) {
