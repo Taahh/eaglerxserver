@@ -177,13 +177,13 @@ public class VanillaInitializer {
 					break;
 				}
 			} else if (connectionState == STATE_STALLING) {
-				if (pktId == 0x40) {
-					// S40PacketDisconnect
-					handleKickPacket(ctx, msg);
-				} else {
-					msg.resetReaderIndex();
-					bufferedPackets.add(msg.retain());
-				}
+				// Play-state packet IDs are protocol dependent. 0x40 is the disconnect
+				// packet in 1.8, but is an ordinary packet in newer versions (for example,
+				// update view position in 1.14.4). Buffer everything until the Eagler
+				// handshake completes and let the server's packet pipeline handle it using
+				// the negotiated protocol.
+				msg.resetReaderIndex();
+				bufferedPackets.add(msg.retain());
 			} else {
 				pipelineData.connectionLogger
 						.error("Disconnecting, server sent unexpected packet " + pktId + " in unknown state");
