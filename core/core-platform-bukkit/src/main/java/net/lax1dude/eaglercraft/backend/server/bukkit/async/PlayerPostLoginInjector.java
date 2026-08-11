@@ -163,17 +163,12 @@ public class PlayerPostLoginInjector {
 				} else if (sendPacketMethod3 == null && params.length == 3
 						&& params[0].getSimpleName().equals("Packet")) {
 					sendPacketMethod3 = m;
-					sendPacketMethod2 = null;
-				} else if (sendPacketMethod3 == null && sendPacketMethod2 == null && params.length == 2
+				} else if (sendPacketMethod2 == null && params.length == 2
 						&& params[0].getSimpleName().equals("Packet")) {
 					sendPacketMethod2 = m;
 				} else if (getHandlerMethod == null && params.length == 0
 						&& m.getReturnType().getSimpleName().equals("PacketListener")) {
 					getHandlerMethod = m;
-				}
-				if (setHandlerMethod != null && sendPacketMethod1 != null && sendPacketMethod3 != null
-						&& getHandlerMethod != null) {
-					break;
 				}
 			}
 			if (setHandlerMethod == null) {
@@ -291,6 +286,9 @@ public class PlayerPostLoginInjector {
 								meth.invoke(netManager, args);
 								return null;
 							}
+						} else if (isCompressionDisabled(ctx) && isSendPacketMethod(meth)
+								&& isCompressionPacket(args)) {
+							return null;
 						} else if (sendPacketMethod1.equals(meth)) {
 							String nm = args[0].getClass().getSimpleName();
 							if (nm.equals("PacketLoginOutDisconnect") && ctx.clientPlayState) {
@@ -311,13 +309,8 @@ public class PlayerPostLoginInjector {
 								throw new EaglerError(getPacketProfile(args[0]));
 							}
 							return null;
-						} else if (ctx.compressionDisable && (sendPacketMethod3 != null ? sendPacketMethod3.equals(meth)
-								: sendPacketMethod2.equals(meth))) {
-							String packetName = args[0].getClass().getSimpleName();
-							if (packetName.equals("PacketLoginOutSetCompression")
-									|| packetName.equals("ClientboundLoginCompressionPacket")) {
-								return null;
-							}
+						} else if (isCompressionDisabled(ctx) && isCompressionSetupMethod(meth, args)) {
+							return null;
 						}
 						return meth.invoke(netManager, args);
 					});
@@ -329,6 +322,30 @@ public class PlayerPostLoginInjector {
 		} catch (ReflectiveOperationException e) {
 			throw Util.propagateReflectThrowable(e);
 		}
+	}
+
+	private boolean isSendPacketMethod(Method method) {
+		return sendPacketMethod1.equals(method) || (sendPacketMethod2 != null && sendPacketMethod2.equals(method))
+				|| (sendPacketMethod3 != null && sendPacketMethod3.equals(method));
+	}
+
+	private static boolean isCompressionDisabled(LoginEventContext ctx) {
+		return ctx.compressionDisable || ctx.channel.pipeline().get("splitter") == null;
+	}
+
+	private static boolean isCompressionPacket(Object[] args) {
+		if (args == null || args.length == 0 || args[0] == null) {
+			return false;
+		}
+		String packetName = args[0].getClass().getSimpleName();
+		return packetName.equals("PacketLoginOutSetCompression")
+				|| packetName.equals("ClientboundLoginCompressionPacket");
+	}
+
+	private static boolean isCompressionSetupMethod(Method method, Object[] args) {
+		String methodName = method.getName();
+		return (methodName.equals("setupCompression") || methodName.equals("setCompressionLevel"))
+				&& args != null && args.length > 0 && args[0] instanceof Integer;
 	}
 
 	private synchronized void bindPacketProfile(Object packet) {
