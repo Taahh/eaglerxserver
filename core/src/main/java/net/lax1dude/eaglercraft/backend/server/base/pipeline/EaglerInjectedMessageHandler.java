@@ -16,9 +16,11 @@
 
 package net.lax1dude.eaglercraft.backend.server.base.pipeline;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.MessageToMessageCodec;
 import net.lax1dude.eaglercraft.backend.server.base.message.InjectedMessage;
@@ -26,10 +28,42 @@ import net.lax1dude.eaglercraft.backend.server.base.message.InjectedMessageContr
 
 public class EaglerInjectedMessageHandler extends MessageToMessageCodec<ByteBuf, InjectedMessage> {
 
-	private final InjectedMessageController injectedController;
+	private static final int MAX_PENDING_PACKETS = 64;
+	private static final int MAX_PENDING_BYTES = 1024 * 1024;
+
+	private InjectedMessageController injectedController;
+	private List<ByteBuf> pendingPackets;
+	private int pendingBytes;
+
+	public EaglerInjectedMessageHandler() {
+	}
 
 	public EaglerInjectedMessageHandler(InjectedMessageController injectedController) {
 		this.injectedController = injectedController;
+	}
+
+	public void setController(Channel channel, InjectedMessageController injectedController) {
+		Runnable task = () -> {
+			this.injectedController = injectedController;
+			if (pendingPackets != null) {
+				try {
+					for (ByteBuf packet : pendingPackets) {
+						injectedController.readPacket(packet);
+					}
+				} finally {
+					for (ByteBuf packet : pendingPackets) {
+						packet.release();
+					}
+					pendingPackets = null;
+					pendingBytes = 0;
+				}
+			}
+		};
+		if (channel.eventLoop().inEventLoop()) {
+			task.run();
+		} else {
+			channel.eventLoop().execute(task);
+		}
 	}
 
 	@Override
@@ -40,10 +74,36 @@ public class EaglerInjectedMessageHandler extends MessageToMessageCodec<ByteBuf,
 	@Override
 	protected void decode(ChannelHandlerContext ctx, ByteBuf msg, List<Object> output) throws Exception {
 		if (msg.readableBytes() > 0 && msg.getUnsignedByte(msg.readerIndex()) == 0xEE) {
-			injectedController.readPacket(msg);
+			if (injectedController != null) {
+				injectedController.readPacket(msg);
+			} else {
+				int len = msg.readableBytes();
+				if ((pendingPackets != null && pendingPackets.size() >= MAX_PENDING_PACKETS)
+						|| len > MAX_PENDING_BYTES - pendingBytes) {
+					ctx.close();
+					return;
+				}
+				if (pendingPackets == null) {
+					pendingPackets = new ArrayList<>();
+				}
+				pendingPackets.add(msg.retain());
+				pendingBytes += len;
+			}
 		} else {
 			output.add(msg.retain());
 		}
+	}
+
+	@Override
+	public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+		if (pendingPackets != null) {
+			for (ByteBuf packet : pendingPackets) {
+				packet.release();
+			}
+			pendingPackets = null;
+			pendingBytes = 0;
+		}
+		super.handlerRemoved(ctx);
 	}
 
 }

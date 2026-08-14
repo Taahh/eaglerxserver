@@ -45,6 +45,7 @@ import net.lax1dude.eaglercraft.backend.server.base.handshake.HandshakerV3;
 import net.lax1dude.eaglercraft.backend.server.base.handshake.HandshakerV4;
 import net.lax1dude.eaglercraft.backend.server.base.handshake.HandshakerV5;
 import net.lax1dude.eaglercraft.backend.server.base.handshake.VanillaInitializer;
+import net.lax1dude.eaglercraft.backend.server.base.message.InjectedMessageController;
 import net.lax1dude.eaglercraft.backend.server.base.message.RewindMessageInjector;
 import net.lax1dude.eaglercraft.backend.server.util.Util;
 
@@ -642,6 +643,9 @@ public class WebSocketEaglerInitialHandler extends MessageToMessageCodec<ByteBuf
 		pipelineData.cancelLoginTimeoutHelper();
 		handshaker.finish(ctx);
 		ChannelPipeline pipeline = ctx.pipeline();
+		if (pipelineData.gameProtocol.ver >= 5) {
+			InjectedMessageController.prepareEagler(ctx.channel());
+		}
 		pipeline.fireUserEventTriggered(EnumPipelineEvent.EAGLER_HANDSHAKE_COMPLETE);
 		if (pipelineData.minecraftProtocol >= 764) {
 			ByteBuf ackBuf = ctx.alloc().buffer();

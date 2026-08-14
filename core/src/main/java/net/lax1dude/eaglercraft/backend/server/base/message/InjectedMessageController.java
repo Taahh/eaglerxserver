@@ -51,10 +51,24 @@ public class InjectedMessageController extends MessageController {
 			ServerMessageHandler handler, Channel channel, int defragSendDelay, int maxPackets) {
 		InjectedMessageController controller = new InjectedMessageController(protocol, handler, channel,
 				defragSendDelay, maxPackets);
-		channel.pipeline().addAfter(PipelineTransformer.HANDLER_FRAME_CODEC, PipelineTransformer.HANDLER_INJECTED,
-				new EaglerInjectedMessageHandler(controller));
+		EaglerInjectedMessageHandler injectedHandler = (EaglerInjectedMessageHandler) channel.pipeline()
+				.get(PipelineTransformer.HANDLER_INJECTED);
+		if (injectedHandler == null) {
+			injectedHandler = new EaglerInjectedMessageHandler(controller);
+			channel.pipeline().addAfter(PipelineTransformer.HANDLER_FRAME_CODEC,
+					PipelineTransformer.HANDLER_INJECTED, injectedHandler);
+		} else {
+			injectedHandler.setController(channel, controller);
+		}
 		channel.pipeline().fireUserEventTriggered(EnumPipelineEvent.EAGLER_INJECTED_MESSAGE_CONTROLLER);
 		return controller;
+	}
+
+	public static void prepareEagler(Channel channel) {
+		if (channel.pipeline().get(PipelineTransformer.HANDLER_INJECTED) == null) {
+			channel.pipeline().addAfter(PipelineTransformer.HANDLER_FRAME_CODEC,
+					PipelineTransformer.HANDLER_INJECTED, new EaglerInjectedMessageHandler());
+		}
 	}
 
 	/**
